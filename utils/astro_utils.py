@@ -3,11 +3,13 @@
 # --------------------------------------------------
 
 import numpy as np
+import pandas as pd
 from astropy.cosmology import Planck18 as cosmo
 from astropy import units as u
 from astropy.constants import c, k_B
 from lmfit import Model, Parameters
-from itertools import combinations
+from tqdm import tqdm
+from itertools import combinations, zip_longest
 
 # --------------------------------------------------
 # Cosmological Functions
@@ -380,21 +382,43 @@ class Survey:
         print('Overlapping Number of Counterparts = {} ({:.2f}%)'.format(len(self.counterparts), (len(self.counterparts)/len(self.counterparts_all))*100))
 
     def get_random_sources(self, n):
+        """
+        Generates a set of random sources for the survey
+
+        :param n: The number of randomly created sources
+        :return: List of n randomly located sources
+        """
         sources_rand = random_sources(n, self.ra_min, self.ra_max, self.dec_min, self.dec_max)
         return sources_rand
 
     def get_s_values(self, r_max_arcsec, n=100000, random=False, disable=False):
+        """
+        Calculates the S values for all potential candidates (S-statistic as presented in Dye et al., 2009)
+
+        :param r_max_arcsec: The maximum search radius [arcsec]
+        :param n: The number of randomly created sources (Default = 100,000)
+        :param random: Boolean for random sources (Default = False)
+        :param disable: Disable progress bar (Default = False)
+        :return: Minimum S-values for each position
+        """
+
+        # Get sources from initialization or produce random sources
         if random:
             sources = self.get_random_sources(n)
         else:
             sources = self.sources
 
+        # Calculating minimum S value for each source
         min_s_values = []
         for source in tqdm(sources, desc = 'Calculating S Values', disable=disable):
+            
+            # Locating all potential candidates within a given radius
             counterpart_s_values = []
             r_max_deg = r_max_arcsec/3600
             ra_min, ra_max, dec_min, dec_max = source.ra-r_max_deg, source.ra+r_max_deg, source.dec-r_max_deg, source.dec+r_max_deg
             possible_counterparts = [counterpart for counterpart in self.counterparts if (ra_min < counterpart.ra < ra_max) & (dec_min < counterpart.dec < dec_max)]
+            
+            # For each possible candidate, calculate S and find the minimum value
             for counterpart in possible_counterparts:
                 r = counterpart.separation(source)
                 if r <= r_max_arcsec:
@@ -402,36 +426,70 @@ class Survey:
                     counterpart_s_values.append(s)
             min_s = min(counterpart_s_values, default=np.nan)
             min_s_values.append(min_s)
+        
+        # Remove non-finite values from final array
         min_s_values_finite = np.array([s for s in min_s_values if np.isfinite(s)])
         min_s_values_finite_sorted = sorted(min_s_values_finite)
         return min_s_values_finite_sorted
 
     def get_matches(self, r_max_arcsec, p_max, n=100000, disable=False):
+        """
+        Return all counterpart matches within a search radius
+
+        :param r_max_arcsec: The maximum search radius [arcsec]
+        :param p_max: The maximum P value for association
+        :param n: The number of randomly created sources (Default = 100,000)
+        :param disable: Disable progress bar (Default = False)
+        :return: Random S value distribution and objects satisfying the maximum P criteria
+        """
+
+        # Get random S-values for comparison
         d_s_random = self.get_s_values(r_max_arcsec=r_max_arcsec, n=n, random=True, disable=disable)
         survey_pairs = []
         for source in tqdm(self.sources, desc='Calculating P Values', disable=disable):
+            
+            # For each source locate all possible candidates
             source_pairs = []
             r_max_deg = r_max_arcsec/3600
             ra_min, ra_max, dec_min, dec_max = source.ra-r_max_deg, source.ra+r_max_deg, source.dec-r_max_deg, source.dec+r_max_deg
             possible_counterparts = [counterpart for counterpart in self.counterparts if (ra_min < counterpart.ra < ra_max) & (dec_min < counterpart.dec < dec_max)]
+            
+            # For each candidate determine the separation, S value and P value
             for counterpart in possible_counterparts:
                 r = counterpart.separation(source)
                 if r <= r_max_arcsec:
                     s_i = counterpart.s_value(source, self.counterparts, self.area_arcsec)
                     p = len([s for s in d_s_random if s < s_i])/n
+
+                    # If P is less than 1/N then replace with 1/N
                     if p < 1/n:
                         p = 1/n
+
+                    # If P is less than maximum P then add the source and counterpart as a pair
                     if p <= p_max:
                         pair = Pair(source, counterpart, r, s_i, p)
                         source_pairs.append(pair)
+            
+            # Sort pairs of sources and counterparts by their P value
             source_pairs_sorted = sorted(source_pairs, key = lambda pair: pair.p)
             survey_pairs.append(source_pairs_sorted)
         return d_s_random, survey_pairs
 
     def get_groups(self, r_max_arcsec, p_max, n=100000, disable=False):
+        """
+        Generates groups of sources based on the number of IDs found
+
+        :param r_max_arcsec: The maximum search radius [arcsec]
+        :param p_max: The maximum P value for association
+        :param n: The number of randomly created sources (Default = 100,000)
+        :param disable: Disable progress bar (Default = False)
+        :return: Dictionary of groups with different numbers of IDs
+        """
+        # Get pairs of sources and counterparts ordered by P value
         d_s_random, survey_pairs = self.get_matches(r_max_arcsec=r_max_arcsec, p_max=p_max, n=n, disable=disable)
         survey_array = np.array(list(zip_longest(*survey_pairs, fillvalue=np.nan))).T
 
+        # Identify sources with no IDs
         try:
             blanks_idx = [idx for idx,pairs in enumerate(survey_array) if pd.isna([pairs[0]])]
             blanks_sources = [self.sources[i] for i in blanks_idx]
@@ -439,6 +497,7 @@ class Survey:
             blanks_sources = []
             print('No Blank Sources')
 
+        # Identify sources with one ID
         try:
             singles = survey_array[pd.isna(survey_array[:, 1])][:,0]
             singles_pairs = [pair for pair in singles if ~pd.isna([pair])]
@@ -446,6 +505,7 @@ class Survey:
             singles_pairs = []
             print('No Single Sources')
 
+        # Identify sources with multiple IDs
         try:
             multiples = survey_array[~pd.isna(survey_array[:,1])]
             multiples_list = [multiples[it][~pd.isna(multiples[it])].tolist() for it in range(len(multiples))]
@@ -454,24 +514,28 @@ class Survey:
             multiples_group = []
             print('No Multiple Sources')
 
+        # Identify primary (lowest P) counterparts
         try:
             primaries_list = [pairs[0] for pairs in survey_array if ~pd.isna([pairs[0]])]
         except:
             primaries_list = []
             print('No Primary Objects')
 
+        # Identify secondary counterparts
         try:
             secondaries_list = [pairs[1] for pairs in survey_array if ~pd.isna([pairs[1]])]
         except:
             secondaries_list = []
             print('No Secondary Objects')
 
+        # Identify tertiary counterparts
         try:
             tertiaries_list = [pairs[2] for pairs in survey_array if ~pd.isna([pairs[2]])]
         except:
             tertiaries_list = []
             print('No Tertiary Objects')
 
+        # Combine all groups above in a dictionary
         groups = {
                 'blanks': blanks_sources,
                 'singles': singles_pairs,
@@ -481,3 +545,27 @@ class Survey:
                 'tertiaries': tertiaries_list}
 
         return d_s_random, groups
+
+# --------------------------------------------------
+# Apply a flux limit to results
+# --------------------------------------------------
+
+def apply_flux_limit(groups, flux_lim, flux_lim_idx=0):
+    """
+    Restricts a dictionary of groups to above a given flux limit
+    
+    :param groups: Dictionary of groups as returned from Survey class
+    :param flux_lim: Minimum flux [mJy]
+    :param flux_lim_idx: Index of wavelength the flux limit applies to
+    :return: Dictionary of groups with a minimum flux limit applied
+    """
+    groups_flux = {}
+
+    # Apply flux limit on blanks, singles, multiples, primaries, secondaries and tertiaries
+    groups_flux['blanks'] = [source for source in groups['blanks'] if source.fluxes[flux_lim_idx] > flux_lim]
+    groups_flux['singles'] = [pair for pair in groups['singles'] if pair.source.fluxes[flux_lim_idx] > flux_lim]
+    groups_flux['multiples'] = [group for group in groups['multiples'] if group.source.fluxes[flux_lim_idx] > flux_lim]
+    groups_flux['primaries'] = [pair for pair in groups['primaries'] if pair.source.fluxes[flux_lim_idx] > flux_lim]
+    groups_flux['secondaries'] = [pair for pair in groups['secondaries'] if pair.source.fluxes[flux_lim_idx] > flux_lim]
+    groups_flux['tertiaries'] = [pair for pair in groups['tertiaries'] if pair.source.fluxes[flux_lim_idx] > flux_lim]
+    return groups_flux
