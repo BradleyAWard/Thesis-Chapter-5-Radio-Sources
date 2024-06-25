@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from astropy.cosmology import Planck18 as cosmo
 from astropy import units as u
-from astropy.constants import c, k_B
+from astropy.constants import c, h, k_B
 from lmfit import Model, Parameters
 from tqdm import tqdm
 from itertools import combinations, zip_longest
@@ -194,13 +194,16 @@ class Pair:
         self.source.wavelengths_rest_m = self.source.wavelengths_obs_m/(1+self.counterpart.redshift)
         self.source.nu_rest = c.value/self.source.wavelengths_rest_m
 
+        # Fitting a one temperature SED
         if fit_sed:
-
+            
+            # If no redshift given, do not return a fit
             if np.isnan(self.counterpart.redshift):
                 self.log_norm = np.nan
                 self.t = np.nan
                 self.beta = np.nan
             else:
+                # Fitting an optically thin model with free normalization, temperature and beta
                 mbb_model = Model(mbb)
                 params = Parameters()
                 params.add_many(('log_norm', -60, True, -65, -55),
@@ -208,6 +211,7 @@ class Pair:
                                 ('beta', 2, True, 1, 4))
                 mbb_fit = mbb_model.fit(self.source.fluxes, params, nu_rest=self.source.nu_rest, weights=1/self.source.flux_errors)
 
+                # Obtain best fitting parameters
                 self.log_norm = mbb_fit.params['log_norm'].value
                 self.t = mbb_fit.params['t'].value
                 self.beta = mbb_fit.params['beta'].value
@@ -569,3 +573,18 @@ def apply_flux_limit(groups, flux_lim, flux_lim_idx=0):
     groups_flux['secondaries'] = [pair for pair in groups['secondaries'] if pair.source.fluxes[flux_lim_idx] > flux_lim]
     groups_flux['tertiaries'] = [pair for pair in groups['tertiaries'] if pair.source.fluxes[flux_lim_idx] > flux_lim]
     return groups_flux
+
+# --------------------------------------------------
+# Rayleigh Distribution
+# --------------------------------------------------
+
+def rayleigh(r, A, sigma):
+    """
+    Returns a Rayleigh distribution
+
+    :param r: Radial separation [arcsec]
+    :param A: Normalization factor
+    :param sigma: Positional error [arcsec]
+    :return: Rayleigh distribution
+    """
+    return A*(r/(sigma**2))*(np.exp(-(r**2)/(2*(sigma**2))))
