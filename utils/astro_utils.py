@@ -328,6 +328,21 @@ class Group:
         # Calculate separations
         separations_arcsec = [self.pairs[it[0]].counterpart.separation(self.pairs[it[1]].counterpart) for it in index_list]
         return separations_arcsec
+    
+    def counterpart_counterpart_separations_new(self):
+        """
+        Determines the separation between counterparts
+        
+        :return: List of separations [arcsec]
+        """
+        # Identify all counterpart pairs
+        obj_list = list(range(len(self.pairs)))
+        index_list = list(combinations(obj_list,2))
+
+        # Calculate separations
+        separations_arcsec_ra = [(self.pairs[it[0]].counterpart.ra - self.pairs[it[1]].counterpart.ra)*3600 for it in index_list]
+        separations_arcsec_dec = [(self.pairs[it[0]].counterpart.dec - self.pairs[it[1]].counterpart.dec)*3600 for it in index_list]
+        return separations_arcsec_ra, separations_arcsec_dec
 
     def counterpart_counterpart_z_difference(self):
         """
@@ -341,6 +356,21 @@ class Group:
 
         # Calculate redshift differences and errors
         z_diff = [abs(self.pairs[it[0]].counterpart.redshift - self.pairs[it[1]].counterpart.redshift) for it in index_list]
+        z_diff_err = [np.sqrt((self.pairs[it[0]].counterpart.redshift_err**2) + (self.pairs[it[1]].counterpart.redshift_err**2)) for it in index_list]
+        return z_diff, z_diff_err
+
+    def counterpart_counterpart_z_difference_new(self):
+        """
+        Determines the separation of redshifts between counterparts
+        
+        :return: List of redshift differences and their errors
+        """
+        # Identify all counterpart pairs
+        obj_list = list(range(len(self.pairs)))
+        index_list = list(combinations(obj_list,2))
+
+        # Calculate redshift differences and errors
+        z_diff = [self.pairs[it[0]].counterpart.redshift - self.pairs[it[1]].counterpart.redshift for it in index_list]
         z_diff_err = [np.sqrt((self.pairs[it[0]].counterpart.redshift_err**2) + (self.pairs[it[1]].counterpart.redshift_err**2)) for it in index_list]
         return z_diff, z_diff_err
 
